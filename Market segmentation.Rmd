@@ -1,0 +1,785 @@
+---
+title: "Market Segmentation"
+output: html_document
+date: "2026-03-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options (repos=c (CRAN="https://cran.r-project.org//"))
+```
+
+# Strategic Marketing Segmentation for Hotel Maria
+
+## Executive Summary
+
+**Objective**\
+This report presents the findings of a segmentation analysis of Hotel Maria's existing customer base and identify those segments most likely to visit the hotel. By understanding customer characteristics and preferences, we provide recommendations that will allow the hotel to provide personalized recommendations for customers.
+
+## Industry Overview - Porter's five forces
+
+**Supplier Power**\
+
+-   Suppliers provide the goods and services that a hotel needs to function.
+-   Supplier power in the hotel industry is low because there are so many of them.
+
+**Competitive Rivalry**\
+
+-   In the hotel world, rivals are usually picked based on price, segment, and proximity.
+-   Rivalry gets more competitive when there are many equally sized competitors or when high fixed costs tempt hotels to reduce prices to fill empty beds.
+
+**Threat of New Entry**\
+
+-   Hotels generally have high barriers because massive amount of capital is needed to buy or build the property and a national service network to stay relevant.
+-   The threat is very low if there is not much land left to build on, and buying an existing hotel is very expensive.
+-   The introduction of the Euro (EMU) in Portugal was perceived to decrease barriers to entry by creating more economic stability.
+
+**Buyer Power**\
+
+-   Buyers have more leverage when they are high-volume tour operators or agencies that can easily switch to a competitor if the price is right.
+-   Price transparency, like Euro, makes it easier for customers to compare rates across borders, further increasing their power.
+
+**Threat of Substitution**\
+
+-   While daily rental houses or lower-class facilities exist, they are often seen as a minor threat to high-end hotels because they can't match the quality or the "all-in-one" service (meetings, spa, dining) of a four- or five-star establishment.
+
+### Sources
+
+Pinto Cardoso, Carla, et al. “An Analysis of the Perceived Effects of Economic and Monetary Union on Hotels in the North of Portugal: Implications for Management.” Worldwide Hospitality and Tourism Themes [Bingley], vol. 2, no. 4, January 2010, pp. 410–27, <https://doi.org/10.1108/17554211011074065>.
+
+Tavitiyaman, Pimtong, et al. “The Impact of Industry Force Factors on Resource Competitive Strategies and Hotel Performance.” International Journal of Hospitality Management, vol. 30, no. 3, September 2011, pp. 648–57, <https://doi.org/10.1016/j.ijhm.2010.11.010>.
+
+Uçmak, Figen, and Cansu Arslan. “The Impact of Competition Conditions on New Market Entrants in Istanbul Hotel Industry: An Analyse by Using Five Forces of Competitive Position Model of M.Porter.” Procedia, Social and Behavioral Sciences, vol. 58, October 2012, pp. 1037–46, <https://doi.org/10.1016/j.sbspro.2012.09.1084>.
+
+# Methods used
+
+In the project, data cleaning was used for managing outliers and missing data, like imputing median value. Scaling was applied to the data to make clustering work better. K-means clustering was used to create the segments based on age, spending and booking patterns.
+
+### Loading the required libraries “tidyverse” and “philentropy”
+
+```{r}
+library (tidyverse)
+library (philentropy)
+library (factoextra)
+library(tidytext)
+library(ggplot2)
+```
+
+### Importing the data set
+
+```{r}
+hotelM <- read.csv("HotelMaria.csv", header = TRUE, sep = ",")
+
+head(hotelM)
+summary(hotelM)
+```
+
+# Cleaning and correcting the data
+
+Changing the age to number format from character, removing minuses
+
+```{r}
+hotelM$Age[hotelM$Age=='NULL'] <- NA # putting NA instead of the NULL to help the transition
+hotelM$Age<-as.numeric(hotelM$Age)
+
+hotelM<- hotelM %>% mutate(across(where(is.numeric), ~ ifelse(.x<0, NA, .x))) # replacing impossible minus data with NA
+
+hotelM$Age[hotelM$Age>100] <- NA # filling unrealistics numbers with NA
+
+colSums(is.na(hotelM))
+
+summary(hotelM)
+```
+
+### Missing Value Analysis
+
+```{r}
+missing<-hotelM%>%
+  summarise_all(list(~ sum(is.na(.)))) %>% 
+  #a single-row data frame where each column contains the count of missing values
+  
+  pivot_longer(cols = everything(), names_to = "column", values_to = "missing_count") %>% 
+  #Converts the data from wide to long format and create the data frame with headings column and missing_count
+  
+  filter(missing_count > 0) %>% 
+  #Keeps only columns that have at least 1 missing value
+  
+  arrange(desc(missing_count))
+  #Sorts the resulting table in descending order of missing values
+head(missing)
+#Visualize - ggplot
+ggplot(missing, aes(x = column, y = missing_count, fill = column)) + 
+  #Creates a ggplot object using the missing_data data frame
+  
+  geom_bar(stat = "identity", show.legend = FALSE) + 
+  geom_text(aes(label = missing_count), vjust = -0.5) + 
+  labs(title = "Missing Values in the Dataset per Column", 
+       x = "Columns", 
+       y = "Missing Values") + 
+  
+  theme_minimal() +
+  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+**Observations**: There are quite many missing data in the dataset. Average lead time, days since first and last stay will be removed, and missing age will be further investigated.
+
+### Removing missing average lead time
+
+```{r}
+hotelM2<- hotelM %>% drop_na(AverageLeadTime)
+```
+
+### Removing the others except age, as they were always present for the same customer
+
+```{r}
+hotelM3<- hotelM2 %>% drop_na(DaysSinceLastStay)
+hotelM3<- hotelM3 %>% drop_na(DaysSinceFirstStay)
+```
+
+### Creating a dataset with missing age
+
+```{r}
+age_missing <- hotelM3 %>% filter(is.na(Age))
+
+# visualization of the nationalities with missing age
+ggplot(age_missing, aes(x=Nationality)) + geom_bar(fill="pink") + 
+  labs(title="Distribution of nationalities for missing age data", 
+  x='Nationality code',
+  y= 'Number of missing age') +
+  theme_minimal()
+  
+
+```
+
+**Observations**: Majority of missing data is Portuguese, I will input the country median for them, the rest will be removed.
+
+```{r}
+prt<-hotelM3%>%filter(Nationality=="PRT") # creating a separate Portugal dataset to see how many rows there are
+nrow(prt)
+
+```
+
+### Replacing missing Portugese age with median age of the portugese customers and dropping the rest of the missing age values
+
+```{r}
+prt_median<- hotelM3 %>% filter(Nationality == "PRT") %>% summarise(med=median(Age,na.rm = TRUE)) %>% pull(med) # calculating the portugese median age
+
+hotelM_final<- hotelM3 %>% mutate(Age=ifelse(Nationality == "PRT" & is.na(Age), prt_median, Age)) %>% filter(!is.na(Age)) # replacing portugese missing values with median and removing the rest
+
+sum(is.na(hotelM_final))
+
+
+```
+
+### Checking for duplicates
+
+```{r}
+duplicated_row <- duplicated (hotelM_final)
+sum (duplicated_row)
+```
+
+# Exploratory Data Analysis
+
+Now that the dataset is clean, exploratory data analysis can be conducted to notice patterns and relationships.
+
+### Spending for lodging by nations
+
+```{r}
+#Calculate the mean spending by country
+avg_spending <- hotelM_final %>%
+  group_by(Nationality) %>%
+  summarise(AvgRevenue = mean(LodgingRevenue, na.rm = TRUE),
+            CustomerCount = n()) %>%
+  filter(CustomerCount > 10) %>% # Filtering out countries with only 1-2 guests to avoid outliers
+  slice_max(AvgRevenue, n = 10)
+
+# 2. Plot
+ggplot(avg_spending, aes(x = reorder(Nationality, -AvgRevenue), y = AvgRevenue)) +
+  geom_col(fill = "lightgreen") +
+  labs(title = "Top 10 Countries by Average Lodging Revenue per Guest",,
+       x = "Country",
+       y = "Average Revenue (€)") +
+  theme_minimal()
+```
+**Observations**: These are the top 10 countries, from where customers spend the most money on lodging, this is important with adjusting the marketing message country by country.
+
+### Spending for other expenses by nations
+
+```{r}
+#Calculate the mean spending by country
+avg_other_spending <- hotelM_final %>%
+  group_by(Nationality) %>%
+  summarise(AvgOtherRevenue = mean(OtherRevenue, na.rm = TRUE),
+            CustomerCount = n()) %>%
+  filter(CustomerCount > 10) %>% # Filtering out countries with only 1-2 guests to avoid outliers
+  slice_max(AvgOtherRevenue, n = 10)
+
+# 2. Plot
+ggplot(avg_other_spending, aes(x = reorder(Nationality, -AvgOtherRevenue), y = AvgOtherRevenue)) +
+  geom_col(fill = "lightblue") +
+  labs(title = "Top 10 Countries by Average Other Revenue per Guest",,
+       x = "Country",
+       y = "Average Revenue (€)") +
+  theme_minimal()
+```
+
+**Observations**: These nationalities spend the most on other things at the hotel, like amenities.
+
+### Pie chart showcasing the distribution channels
+
+```{r}
+# Getting the counts for each Distribution Channel
+channel_counts <- table(hotelM_final$DistributionChannel)
+
+# Defining the slices and labels
+slices_actual <- as.numeric(channel_counts)
+lbls_actual   <- names(channel_counts)
+
+# Calculating percentages
+pct_actual <- round(slices_actual / sum(slices_actual) * 100)
+
+# Formatting the labels (e.g., "Direct 15%")
+lbls_actual <- paste(lbls_actual, pct_actual)
+lbls_actual <- paste(lbls_actual, "%", sep = "")
+
+# Generating the pie chart
+pie(slices_actual, 
+    labels = lbls_actual, 
+    col = rainbow(length(lbls_actual)), 
+    main = "Distribution Channels: Actual Volume")
+```
+
+# Customer Segmentation
+
+### Removing non numerical columns
+
+```{r}
+hotel_numeric <- hotelM_final %>%
+  select(where(is.numeric))
+
+# Check the column names to see what's left
+names(hotel_numeric)
+
+sapply(hotel_numeric, sd, na.rm = TRUE) #checking to see which variables have 0 deviation, as they can't be used for kmeans clustering
+```
+
+### Standardising the scales
+
+```{r}
+# Defining the specific noise columns to drop
+noise_cols <- c("BookingsCanceled", "BookingsNoShowed", "BookingsCheckedIn", "NameHash", "DocIDHash")
+
+# Removing them
+hotel_numeric <- hotel_numeric[, !(names(hotel_numeric) %in% noise_cols)]
+
+# Removing anything that starts with "SR" using a pattern search
+hotel_numeric <- hotel_numeric[, !grepl("^SR", names(hotel_numeric))]
+
+
+scaled.hotel <- scale(hotel_numeric)
+summary(scaled.hotel)
+```
+
+## Determining the optimal number of clusters using samples (10000) as the dataset is very big
+
+```{r}
+set.seed(123) 
+sample_index <- sample(nrow(scaled.hotel), 10000)
+hotel_sample <- scaled.hotel[sample_index, ]
+```
+
+### Elbow plot
+
+```{r}
+fviz_nbclust(hotel_sample, kmeans, method = "wss", k.max = 15) 
+```
+
+**Observations**: Based on the elbow plot, 3 or 4 clusters should be created.
+
+### Silhouette Plot
+
+```{r}
+fviz_nbclust(hotel_sample, kmeans, method = "silhouette", k.max = 15)
+```
+
+**Observations**: Based on silhouette plot, 2, 3 or 4 clusters should be created.
+
+### Visualizing the clusters with k=3 and k=4
+
+First, trying with k=3
+
+```{r}
+set.seed (123) 
+hotelCluster_3k <- kmeans (scaled.hotel, 3) #Applies K-means clustering to the scaled data set, k= 3
+hotelCluster_3k [["size"]] # Shows how many observations (customers/data points) are in each cluster
+
+# Colour palette for the 4 clusters
+cluster_palette <- c(
+  "1" = "#FC8D62", 
+  "2" = "#66C2A5", 
+  "3" = "#8DA0CB", 
+  "4" = "#E78AC3"  
+)
+
+
+#Create a data frame for plotting
+size3k <- data.frame(Size = hotelCluster_3k [["size"]],
+                     Cluster = c ("Cluster 1", "Cluster 2", "Cluster 3"))
+
+
+
+#Create a bar chart of cluster sizes
+ggplot (size3k, aes (x= factor (Cluster), y = Size)) +
+  geom_col(fill =hcl (195,100,65)) +
+  labs (title = "K means cluster analysis: 3 clusters",
+        x = "Clusters",
+        y = "Size") +
+    geom_text(aes(label=Size), vjust= -0.5)
+
+# Visualizing the clusters 
+fviz_cluster(hotelCluster_3k, scaled.hotel, ellipse.type = "norm", palette = cluster_palette,geom = "point", ggtheme = theme_minimal())
+```
+
+**Observations**: There is big difference between the volume of the clusters, thus we will try using 4 clusters.
+
+Trying with K=4
+
+```{r}
+set.seed (123) # Every time the code is run, the clustering results will be the same.
+hotelCluster_4k <- kmeans (scaled.hotel, 4) #Applies K-means clustering to the scaled data set, k= 4
+hotelCluster_4k [["size"]] # Shows how many observations (customers/data points) are in each cluster
+
+#Create a data frame for plotting
+size4k <- data.frame(Size = hotelCluster_4k [["size"]],
+                     Cluster = c ("Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4"))
+
+
+
+#Create a bar chart of cluster sizes
+ggplot (size4k, aes (x= factor (Cluster), y = Size)) +
+  geom_col(fill =hcl (195,100,65)) +
+  labs (title = "K means cluster analysis: 4 clusters",
+        x = "Clusters",
+        y = "Size") +
+    geom_text(aes(label=Size), vjust= -0.5)
+  
+# Visualizing the clusters 
+fviz_cluster(hotelCluster_4k, scaled.hotel, ellipse.type = "norm", palette = cluster_palette,geom = "point", ggtheme = theme_minimal())
+```
+
+**Observations**: There is a lot of outliers, that are far from the main cluster, these are probably very high spenders. They should receive own high-end marketing, but as they distrupt the clustering too much, they will be removed.
+
+### Choosing k=4 and cleaning the clusters by removing the top 5% spenders and stayers
+
+```{r}
+hotel_subset <- hotel_numeric %>%
+  filter(LodgingRevenue < quantile(LodgingRevenue, 0.95, na.rm = TRUE),
+         RoomNights < quantile(RoomNights, 0.95, na.rm = TRUE))
+
+#Removing any columns that now have 0 variation
+hotel_subset <- hotel_subset[, sapply(hotel_subset, sd, na.rm = TRUE) > 0]
+
+#Re-scale and Re-cluster
+scaled_final <- scale(hotel_subset)
+set.seed(123)
+
+hotelCluster_4k <- kmeans (scaled_final, 4) #Applies K-means clustering to the scaled data set, k= 4
+hotelCluster_4k [["size"]] # Shows how many observations (customers/data points) are in each cluster
+
+#Create a data frame for plotting
+size4k <- data.frame(Size = hotelCluster_4k [["size"]],
+                     Cluster = c ("Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4"))
+
+
+#Create a bar chart of cluster sizes
+ggplot (size4k, aes (x= factor (Cluster), y = Size)) +
+  geom_col(fill =hcl (195,100,65)) +
+  labs (title = "K means cluster analysis: 4 clusters",
+        x = "Clusters",
+        y = "Size") +
+    geom_text(aes(label=Size), vjust= -0.5)
+
+# Visualizing the clusters 
+fviz_cluster(hotelCluster_4k, scaled_final, ellipse.type = "norm", palette = cluster_palette, geom = "point", ggtheme = theme_minimal())
+
+```
+
+**Observations**: The clusters are quite evenly distributed number wise, but there might be some overlaps, as there are no distinct clusters.
+
+## Inspecting the quality of the clusters, Calculating cluster specific means
+
+```{r}
+# Adding the clusters to the data frame used for clustering
+hotel_subset$k4Cluster <- hotelCluster_4k$cluster
+
+# Joining it back to the original full dataset using the 'ID' column
+hotel_segments <- hotel_subset %>%
+  select(ID, k4Cluster) %>% 
+  left_join(hotelM_final, by = "ID")
+
+summarystats.percluster_4k_all <- hotel_segments %>%
+  group_by(k4Cluster) %>%
+  summarise(
+    Customer_Count = n(),
+    # Removing NameHash, and DocIDHash from the mean calculation
+    across(where(is.numeric) & !c(ID, NameHash, DocIDHash), mean, na.rm = TRUE))
+
+head(summarystats.percluster_4k_all)
+```
+
+# Characteristics of the segments
+
+## Distribution of ages in each cluster
+
+```{r}
+# Making the clusters as factors
+hotel_segments$k4Cluster <- as.factor(hotel_segments$k4Cluster)
+
+ggplot(hotel_segments, aes(x = Age, fill = k4Cluster)) +
+  geom_density(alpha = 0.5) + 
+  facet_wrap(~k4Cluster, scales = "free_y") + 
+  labs(title = "Age Distribution by Customer Segment",
+       subtitle = "Comparing the age profile across the 4 identified clusters",
+       x = "Age (Years)",
+       y = "Density",
+       fill = "Cluster") + 
+  scale_fill_manual(values = cluster_palette) + 
+  facet_wrap(~k4Cluster) + 
+  labs(title = "Age Distribution per Cluster") +
+  theme_minimal()
+  
+```
+
+**Observations**: Most of the clusters have similar age distributions. Cluster 1 and 4 have a lot of middle-aged customers, but it could be the result of imputing ages with Portuguese media age.
+
+## Total revenue per each cluster
+
+```{r}
+# Calculating Total Revenue and Sum it per Cluster
+revenue_summary <- hotel_segments %>%
+  mutate(TotalRevenue = LodgingRevenue + OtherRevenue) %>%
+  group_by(k4Cluster) %>%
+  summarise(Sum_Revenue = sum(TotalRevenue, na.rm = TRUE))
+
+# Visualisation
+ggplot(revenue_summary, aes(x = factor(k4Cluster), y = Sum_Revenue, fill = factor(k4Cluster))) +
+  geom_col() +  
+  scale_y_continuous(labels = scales::dollar_format(prefix = "€", big.mark = ".", decimal.mark = ",")) + 
+  labs(title = "Total Revenue Contribution per Cluster",
+       subtitle = "Combined Lodging and Other Revenue",
+       x = "Customer Segment (Cluster)",
+       y = "Total Revenue (Sum)",
+       fill = "Cluster") + 
+  geom_text(aes(label = scales::dollar(Sum_Revenue, prefix = "€", big.mark = ".", decimal.mark = ",")),
+            size = 5, colour = "black",
+            position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values = cluster_palette) + 
+  scale_y_continuous(labels = scales::dollar_format(prefix = "€")) + 
+  labs(title = "Total Revenue Contribution per Cluster",
+       x = "Cluster", y = "Total Revenue") +
+  theme_minimal()
+```
+
+**Observations**: The members of the clusters 2 and 3 are willing to pay for hotel, thus they can be targeted with higher end offerings. Meanwhile clusters 1 and 4 should be offered more discounts and budget options.
+
+## Average lead time
+
+```{r}
+ggplot(hotel_segments, aes(x = AverageLeadTime, color = factor(k4Cluster), fill = factor(k4Cluster))) +
+  geom_density(alpha = 0.2, linewidth = 1) + 
+
+  scale_color_manual(values = cluster_palette) +
+  scale_fill_manual(values = cluster_palette) +
+  
+  coord_cartesian(xlim = c(0, 250)) + 
+  
+  labs(title = "Booking Lead Time Patterns by Segment",
+       subtitle = "Comparing how far in advance different clusters book their stay",
+       x = "Average Lead Time (Days)",
+       y = "Density",
+       color = "Cluster",
+       fill = "Cluster") +
+  theme_minimal()
+```
+
+**Observations**: Clusters 1 and 4 often book their hotel rooms quite close to the travels, meanwhile the others are book more in advance. Thus groups 2 and 3 should be marketed for offers more farther in the future, and clusters 1 and 4 should get offers, like last-minute deals, as they seem more spontanious.
+
+## Distribution of rooms/nights and persons/night
+
+```{r}
+# Preparing the data
+occupancy_summary <- hotel_segments %>%
+  group_by(k4Cluster) %>%
+  summarise(
+    Avg_RoomNights = mean(RoomNights, na.rm = TRUE),
+    Avg_PersonsNights = mean(PersonsNights, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("Avg"), 
+               names_to = "Metric", 
+               values_to = "Value")
+
+# Side-by-side bar chart
+ggplot(occupancy_summary, aes(x = factor(k4Cluster), y = Value, fill = Metric)) +
+  geom_col(position = "dodge") + 
+
+  scale_fill_manual(values = c("Avg_PersonsNights" = "#8DA0CB", "Avg_RoomNights" = "#66C2A5"),
+                    labels = c("Persons per Night", "Rooms per Night")) +
+  labs(title = "Occupancy Patterns by Customer Segment",
+       subtitle = "Comparison of average room nights vs. person nights",
+       x = "Customer Segment (Cluster)",
+       y = "Average Nights",
+       fill = "Metric Type") +
+  theme_minimal() +
+  geom_text(aes(label = round(Value, 2)), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 4)
+```
+
+**Observations**: Clusters 2 and 3 tend to travel in groups, thus they should be offered group and room discounts.
+
+## Cancelled and no shows
+
+```{r}
+cancellation_summary <- hotel_segments %>%
+  group_by(k4Cluster) %>%
+  summarise(
+    Avg_Canceled = mean(BookingsCanceled, na.rm = TRUE),
+    Avg_NoShow = mean(BookingsNoShowed, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = starts_with("Avg"), 
+               names_to = "Status", 
+               values_to = "Average_Count")
+
+# Visualisation
+ggplot(cancellation_summary, aes(x = factor(k4Cluster), y = Average_Count, fill = Status)) +
+  geom_col(position = "dodge") +
+  
+  scale_fill_manual(values = c("Avg_Canceled" = "#FC8D62", "Avg_NoShow" = "#8DA0CB"),
+                    labels = c("Cancellations", "No-Shows")) +
+  labs(title = "Booking Reliability by Customer Segment",
+       subtitle = "Average cancellations vs. no-shows per cluster",
+       x = "Customer Segment (Cluster)",
+       y = "Average Number of Bookings",
+       fill = "Booking Status") +
+  theme_minimal() +
+  geom_text(aes(label = round(Average_Count, 3)), 
+            position = position_dodge(width = 0.9), 
+            vjust = -0.5, size = 4)
+```
+
+**Observations**: Clusters 1 and 4 are more riskier customers than the other two, so in marketing expences, potential cancellations should be accounted for.
+
+## Extra requests
+
+```{r}
+# Cleaning up the names
+Preferences <- summarystats.percluster_4k_all %>%
+  select(k4Cluster, SRHighFloor, SRCrib, SRKingSizeBed, SRTwinBed, SRQuietRoom) %>%
+  pivot_longer(cols = c(SRHighFloor, SRCrib, SRKingSizeBed, SRTwinBed, SRQuietRoom), 
+               names_to = "variable", 
+               values_to = "value")
+Preferences_Clean <- Preferences %>%
+  mutate(variable = gsub("SR", "", variable))
+
+# Visualisation
+ggplot(Preferences_Clean, aes(x = factor(k4Cluster), y = value, fill = factor(k4Cluster))) +
+  geom_col(show.legend = FALSE) + 
+  
+  scale_fill_manual(values = cluster_palette) + 
+  
+  facet_wrap(~variable, ncol = 2, scales = "free_y") + 
+  
+  geom_text(aes(label = scales::percent(value, accuracy = 0.1)), 
+            vjust = -0.6, size = 3.5, fontface = "bold") +
+  
+  scale_y_continuous(expand = expansion(mult = c(0, 0.3))) +
+  
+  labs(title = "Room Preferences by Cluster",
+       subtitle = "Percentage of guests requesting specific amenities",
+       x = "Customer Clusters",
+       y = "Percentage of Guests") +
+  
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.major.x = element_blank(),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+```
+
+**Observations**: Based on the special requests of each room, personal offerings so]hould be made, like offering quiet room to members of clusters 2 and 3. But this shows that for king and twin bed, all the clusters are willing to pay extra.
+
+## Distribution channels by clusters
+
+```{r}
+# Preparing the data
+channel_summary <- hotel_segments %>%
+  group_by(k4Cluster, DistributionChannel) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(k4Cluster) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Pie chart
+ggplot(channel_summary, aes(x = "", y = Percentage, fill = DistributionChannel)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~k4Cluster) +
+  
+  geom_text(aes(label = ifelse(Percentage > 0.05, scales::percent(Percentage, accuracy = 1), "")),
+            position = position_stack(vjust = 0.5), size = 3, color = "white", fontface = "bold") +
+  
+  labs(title = "Distribution Channel Mix by Cluster",
+       subtitle = "Percentage breakdown of booking sources for each segment",
+       fill = "Channel") +
+  theme_void() + 
+  theme(
+    strip.text = element_text(size = 12, face = "bold"), 
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 15),
+    plot.subtitle = element_text(hjust = 0.5)
+  ) +
+  scale_fill_brewer(palette = "Set2") 
+```
+
+**Observations**: Distribution channels are quite similat in each cluster, travel agent or operator is the most popular way of booking, corporate people are mostly present in cluster 1 and 4, but it's not too significant to change marketing because of that.
+
+## Market segments by clusters
+
+```{r}
+# Preparing the data
+market_summary <- hotel_segments %>%
+  group_by(k4Cluster, MarketSegment) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(k4Cluster) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Pie charts
+ggplot(market_summary, aes(x = "", y = Percentage, fill = MarketSegment)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~k4Cluster) +
+
+  geom_text(aes(label = ifelse(Percentage > 0.05, scales::percent(Percentage, accuracy = 1), "")),
+            position = position_stack(vjust = 0.5), size = 3, color = "white", fontface = "bold") +
+ 
+  labs(title = "Market Segment Composition by Cluster",
+       subtitle = "Trip purpose and segment breakdown for Hotel Maria guests",
+       fill = "Market Segment") +
+  theme_void() + 
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 15),
+    plot.subtitle = element_text(hjust = 0.5)
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+**Observations**: 'Other' overpowers the market segments, it would be important to specify more options. But now we will look into the segments again, but without 'other'.
+
+## Market segments by clusters
+
+### Excluding 'other' as it was overpowering the rest
+
+```{r}
+# Filtering out Other
+market_deep_dive <- hotel_segments %>%
+  filter(MarketSegment != "Other") %>% 
+  group_by(k4Cluster, MarketSegment) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(k4Cluster) %>%
+  mutate(Percentage = Count / sum(Count))
+
+# Pie charts
+ggplot(market_deep_dive, aes(x = "", y = Percentage, fill = MarketSegment)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~k4Cluster) +
+
+  geom_text(aes(label = ifelse(Percentage > 0.05, scales::percent(Percentage, accuracy = 1), "")),
+            position = position_stack(vjust = 0.5), size = 3, color = "black", fontface = "bold") +
+  
+  labs(title = "Specific Market Segments (Excluding 'Other')",
+       subtitle = "Analysis of targeted niches across the 4 clusters",
+       fill = "Market Segment") +
+  theme_void() + 
+  theme(
+    strip.text = element_text(size = 12, face = "bold"),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 15)
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+**Observations**: Travel agent is still dominant in the market segments, but groups and direct are also many. Group 1 and 4 are similar and group 2 and 3 are similar to each other as well.
+
+## Top countries of each cluster
+
+```{r}
+# Preparing the data
+top_nations_per_cluster <- hotel_segments %>%
+  group_by(k4Cluster, Nationality) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  group_by(k4Cluster) %>%
+  slice_max(Count, n = 10) %>%
+  mutate(Nationality = reorder_within(Nationality, Count, k4Cluster))
+
+# Visualization
+ggplot(top_nations_per_cluster, aes(x = Count, y = Nationality, fill = factor(k4Cluster))) +
+  geom_col(show.legend = FALSE) +
+  
+  scale_fill_manual(values = cluster_palette) + 
+  
+  facet_wrap(~k4Cluster, ncol = 2, scales = "free") +
+  
+  scale_y_reordered() +
+  
+  geom_text(aes(label = Count), hjust = -0.2, size = 3) +
+  
+  labs(title = "Top 10 Nationalities per Customer Segment",
+       subtitle = "Geographic concentration across Hotel Maria's 4 clusters",
+       x = "Number of Guests",
+       y = "Country (ISO Code)") +
+  
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 9),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.2)))
+```
+
+**Observations**: The main country is Portugal in cluster 1 and 4, this explains the spike in age distribution. Domestic travelers are the main customers in clusters 1 and 4. France is the most common in cluster 2, and Germany, France and UK are the most common in cluster 3. This gives useful information where market the different strategies according to the clusters.
+
+# Recommendations and Limitations
+
+## Key Findings
+
+Strategic recommendations can also be found in the observations for each figure. Overall, all 4 clusters should receive distinct offering and deals, accounting for their special requests, nationalities and many more. As clusters 1, 4 and 2, 3 are quite similar, if there is not big enough marketing budget, only two separate marketing plans. There is a clear divide in lead times. Clusters 1 and 4 are spontaneous/last-minute travelers, whereas Clusters 2 and 3 plan significantly further in advance. Domestic (Portuguese) travelers dominate Clusters 1 and 4. In contrast, Clusters 2 and 3 are composed largely of international guests from France, Germany, and the UK. Clusters 2 and 3 typically travel in larger groups (higher persons-per-night). However, Clusters 1 and 4 present a higher operational risk due to more frequent cancellations and no-shows.
+
+## Recommendations
+
+**If budget is limited**: Focus on two distinct campaigns rather than four.\
+
+- The "Premium International" Campaign (Clusters 2 & 3): Target these groups with high-end offerings and early-bird specials at least 3–6 months in advance.
+
+- The "Domestic Value" Campaign (Clusters 1 & 4): Use last-minute deals and mobile-first advertising to capture spontaneous domestic travelers.
+
+**Personalized service offerings.**
+
+- Room Allocation: Prioritize "Quiet Rooms" for Clusters 2 and 3, as they show a higher preference for these amenities.
+
+- Monetizing Comfort: Since all clusters show a willingness to pay extra for King and Twin bed configurations, these should be marketed during the booking process.
+
+- Group Packages: Create specific "Group & Room" discount packages tailored to the occupancy patterns of Clusters 2 and 3.
+
+**High-value strategy**
+
+- VIP Treatment: Although the top 5% of spenders were removed to stabilize the clusters, they require a high-end loyalty program. These individuals should receive personalized outreach and exclusive perks to ensure long-term retention.
+
+## Limitations
+
+There are many limitations that are present in this project. One was the removal of non numerical variables as clustering would not have been possible with character variables. Thus nationality, distribution channel and market segment wasn't used. Also, the special requests had to be removed as they had 0 deviation. The missing Portuguese ages had been filled with the rest of the Portuguese customers' ages, thus it does not reflect the complete truth.
+
+The top 5% of lodging revenue and rooms/night were removed to help with clustering, thus missing the top spenders in the clusters. These top spenders need a different, high-touch marketing strategy to keep them loyal to the hotel. The clusters are not distinct, but they might overlap, and marketing practices might not resonate with the whole market segment. In the market segment pie chart, the majority was 'other', thus they are unknown. The true identity remains hidden and we only make predictions based on the other types.
